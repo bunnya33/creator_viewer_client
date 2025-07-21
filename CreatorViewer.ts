@@ -1,4 +1,4 @@
-import { gfx, isValid, Sprite, UIRenderer, UITransform } from 'cc';
+import { Game, game, gfx, isValid, Sprite, UIRenderer, UITransform } from 'cc';
 import { CCObject, Color, Component, Director, director, js, Node, Rect, Scene, Size, ValueType, Vec2, Vec3, Vec4 } from 'cc';
 import { EDITOR_NOT_IN_PREVIEW } from 'cc/env';
 
@@ -1039,6 +1039,8 @@ if (!EDITOR_NOT_IN_PREVIEW) {
         globalInfo.bridge.syncScene();
         // Logger.log(JSON.stringify(globalInfo.sceneTree, undefined, 2));
     })
+
+    game.on(Game.EVENT_GAME_INITED, ()=>{globalInfo.bridge.connect()});
 
     // const ws = new WebSocket("ws://localhost:8999");
     // ws.onopen = ()=>{
