@@ -1,6 +1,6 @@
-import { Game, game, gfx, isValid, Sprite, UIRenderer, UITransform } from 'cc';
+import { Asset, assetManager, Canvas, EditBox, Game, game, gfx, Graphics, ImageAsset, isValid, Label, Sprite, SpriteFrame, Texture2D, UIRenderer, UITransform, Widget } from 'cc';
 import { CCObject, Color, Component, Director, director, js, Node, Rect, Scene, Size, ValueType, Vec2, Vec3, Vec4 } from 'cc';
-import { EDITOR_NOT_IN_PREVIEW } from 'cc/env';
+import { EDITOR, EDITOR_NOT_IN_PREVIEW } from 'cc/env';
 
 let srclog = console.log;
 let srcLogFunc = srclog;
@@ -9,7 +9,7 @@ export class Logger {
     static logEnable = false;
     static logSwitch() {
         this.logEnable = !this.logEnable;
-        srcLogFunc = this.logEnable ? srclog : ()=>{};
+        srcLogFunc = this.logEnable ? srclog : () => { };
     }
 
     static get log() {
@@ -34,6 +34,8 @@ enum PROP_EDIT_TYPE {
     FUNC_HOOK,
     /** 属性存在setter（比如  _prop 存在 名为 prop的setter） */
     SETTER,
+    /** 资源、节点、或者组件类型 */
+    CCOBJECT,
 }
 
 interface IPropEditRecordItem {
@@ -42,9 +44,7 @@ interface IPropEditRecordItem {
     target?: any;
 }
 
-type PropType = "string" | "number" | "Vec2" | "Vec3" | "Vec4" | "Color" | "Enum" | "Object" | "Rect" | "Size";
-
-function getValueTypeName(value: ValueType): PropType {
+function getValueTypeName(value: ValueType): cvSupportType {
     if (value instanceof Vec3) {
         return 'Vec3';
     }
@@ -67,7 +67,7 @@ function getValueTypeName(value: ValueType): PropType {
 
 interface IPropCopy {
     value: any;
-    type: PropType;
+    type: cvSupportType;
     enumList?: { name: string, value: number }[];
     hasSetter: boolean;
 }
@@ -75,39 +75,50 @@ interface IPropCopy {
 export class ViewBridgeBase {
 
     protected _websocket: WebSocket;
+    protected _connected: boolean = false;
 
     connect() {
-        this._websocket = new WebSocket("ws://127.0.0.1:33000");
-        this._websocket.onopen = this.onConnected.bind(this);
-        this._websocket.onmessage = this.onReceiveMessage.bind(this);
-        this._websocket.onclose = this.onSocketError.bind(this);
-        this._websocket.onerror = this.onSocketError.bind(this);
+        try {
+            this._websocket = new WebSocket("ws://127.0.0.1:33000");
+            this._websocket.onopen = this.onConnected.bind(this);
+            this._websocket.onmessage = this.onReceiveMessage.bind(this);
+            this._websocket.onclose = this.onSocketError.bind(this);
+            this._websocket.onerror = this.onSocketError.bind(this);
+        } catch (error) {
+            console.log(error);
+        }
     }
 
     close() {
-        if(this._websocket) {
-            this._websocket.onopen = undefined;
-            this._websocket.onmessage = undefined;
-            this._websocket.onclose = undefined;
-            this._websocket.onerror = undefined;
-            this._websocket.close();
+        this._connected = false;
+        if (this._websocket) {
+            const websocket = this._websocket;
+            
             this._websocket = undefined;
+            websocket.close();
+            websocket.onopen = undefined;
+            websocket.onmessage = undefined;
+            websocket.onclose = undefined;
+            websocket.onerror = undefined;
         }
     }
 
     protected onSocketError() {
+        console.log(`onSocketError  `);
         this.close();
-        setTimeout(()=>{
+        setTimeout(() => {
             this.connect();
-        },500);
+        }, 500);
     }
 
     protected onConnected() {
         Logger.log(`on websocket connect 建立连接，发送节点树数据`);
+        this._connected = true;
         this.syncScene();
     }
 
     protected sendData(viewerData: C2S_CreatorViewerMessage) {
+        if (!this._connected) return;
         this._websocket?.send(JSON.stringify(viewerData));
     }
 
@@ -115,35 +126,35 @@ export class ViewBridgeBase {
         try {
             const data = JSON.parse(ev.data) as S2C_CreatorViewerMessage;
             const type = data.type;
-            Logger.log(`receive message `,data);
-            switch(type) {
+            Logger.log(`receive message `, data);
+            switch (type) {
                 case 'change_node_active': {
                     const node = globalInfo.allNodesMap.get(data.data.nodeUuid);
-                    if(node) {
+                    if (node) {
                         node.active = data.data.active;
                     }
                 }
-                break;
+                    break;
                 case 'node_parent_or_sibling_index_change': {
                     const node = globalInfo.allNodesMap.get(data.data.nodeUuid);
                     const newParentNode = globalInfo.allNodesMap.get(data.data.parentUuid);
-                    if(node && newParentNode) {
+                    if (node && newParentNode) {
                         newParentNode.insertChild(node, data.data.siblingIndex);
                     }
                 }
-                break;
+                    break;
                 case 'select_node': {
                     this.selectNodeByUUid(data.data);
                 }
-                break;
-                case 'on_tracker_prop_change' : {
+                    break;
+                case 'on_tracker_prop_change': {
                     const tracker = globalInfo.trackers.get(data.data.targetUuid);
-                    if(tracker) {
+                    if (tracker) {
                         tracker.modifyTrackProp(data.data.propName, data.data.value);
                     }
                 }
-                break;
-            } 
+                    break;
+            }
         } catch (error) {
             console.error(error);
         }
@@ -161,7 +172,7 @@ export class ViewBridgeBase {
             serializeDatas.push(tracker.getSerializeData());
         })
         Logger.log(serializeDatas);
-        this.sendData({ type : 'track_attrs', data : serializeDatas})
+        this.sendData({ type: 'track_attrs', data: serializeDatas })
         // Logger.log(JSON.stringify(serializeDatas));
     }
 
@@ -189,8 +200,8 @@ export class ViewBridgeBase {
         this.sendData({ type: 'children_order_change', data: { nodeUuid: uuid, childrenOrder: childrenOrder } });
     }
 
-    onTrackedPropValueChanged(targetUuid : string, propName : string, newValue : any) {
-        this.sendData({ type: 'on_tracked_prop_change', data: { targetUuid : targetUuid, propName : propName, newValue : newValue} });
+    onTrackedPropValueChanged(targetUuid: string, propName: string, newValue: any) {
+        this.sendData({ type: 'on_tracked_prop_change', data: { targetUuid: targetUuid, propName: propName, newValue: newValue } });
     }
 }
 
@@ -200,7 +211,7 @@ export class GlobalInfo {
     allNodesMap: Map<string, Node> = new Map();
     allNodeInfosMap: Map<string, NodeInfo> = new Map();
 
-    selectedNode : NodeInfo;
+    selectedNode: NodeInfo;
 
     bridge: ViewBridgeBase = new ViewBridgeBase();
 
@@ -221,7 +232,7 @@ interface ITrackerPropConfig {
     key: string;
     alias?: string;
     setFuncs?: string[];
-    setterKey ?: string;
+    setterKey?: string;
 }
 
 interface ITrackerPropEnumConfig {
@@ -244,42 +255,42 @@ class ViewerColor {
 }
 
 interface IMultiSetterInfo {
-    name : string;
+    name: string;
     /** 是否是函数  true 为 function  false  为 setter */
-    isFunc : boolean;
+    isFunc: boolean;
 }
 
 interface ITrackPropConfigGroup {
-    customItems ?: ITrackerPropConfig[];
-    replaceMap ?: Record<string, string>;
-    multiSetters ?: Record<string, IMultiSetterInfo[]>;
+    customItems?: ITrackerPropConfig[];
+    replaceMap?: Record<string, string>;
+    multiSetters?: Record<string, IMultiSetterInfo[]>;
 }
 
 const ReflectForceSetterProps: Map<CCObjectConstructor, ITrackPropConfigGroup> = new Map();
 globalInfo['ReflectForceSetterProps'] = ReflectForceSetterProps;
 
 // CCObject 只处理ObjectFlag
-ReflectForceSetterProps.set(CCObject, 
-    { customItems : [{ key: '_objFlags' }]}
+ReflectForceSetterProps.set(CCObject,
+    { customItems: [{ key: '_objFlags' }] }
 );
 // Node 特殊处理属性
 ReflectForceSetterProps.set(Node, {
     customItems: [
-        { key: "_lpos", alias: "position", setFuncs: ["setPosition", "setWorldPosition"] }, 
-        { key: "_lscale", alias: "scale", setFuncs: ["setScale"] }, 
-        { key: "_euler", alias: "eulerAngle", setterKey : 'eulerAngles' }, 
+        { key: "_lpos", alias: "position", setFuncs: ["setPosition", "setWorldPosition"] },
+        { key: "_lscale", alias: "scale", setFuncs: ["setScale"] },
+        { key: "_euler", alias: "eulerAngle", setterKey: 'eulerAngles' },
         { key: "_name" }
     ]
 });
 
 // Node 特殊处理属性
 ReflectForceSetterProps.set(Sprite, {
-    replaceMap : { '_useGrayscale' : 'grayscale'}
+    replaceMap: { '_useGrayscale': 'grayscale' }
 });
 
 // Node 特殊处理属性
 ReflectForceSetterProps.set(UITransform, {
-    multiSetters : { '_contentSize' : [{ name : 'setContentSize', isFunc : true}], '_anchorPoint' : [{ name : 'setAnchorPoint', isFunc : true }]},
+    multiSetters: { '_contentSize': [{ name: 'setContentSize', isFunc: true }], '_anchorPoint': [{ name: 'setAnchorPoint', isFunc: true }] },
 });
 
 
@@ -352,7 +363,7 @@ function getCCObjectClassEnum(target: CCObjectConstructor, propKey: string) {
                 const enumList = [];
                 let enumfilterCached = [];
                 Object.keys(cdefine.enumDefine).forEach(key => {
-                    if(enumfilterCached.includes(key)) return;
+                    if (enumfilterCached.includes(key)) return;
                     const reflectKey = cdefine.enumDefine[key];
                     enumfilterCached.push(reflectKey);
                     enumList.push({
@@ -382,6 +393,27 @@ function getCCObjectClassEnum(target: CCObjectConstructor, propKey: string) {
         const prototype = Object.getPrototypeOf(target['__attrs__']);
         if (prototype) {
             return getCCObjectClassEnum(prototype, propKey);
+        }
+    }
+}
+
+function getCCObjectClassPropTypeMatch<T extends CCObjectConstructor>(target: CCObjectConstructor, setterKey: string, propName: string, parentClass: T): CCObjectConstructor {
+    if (!target) return;
+
+    if (target['__attrs__']) {
+        const setterClass = target['__attrs__'][`${setterKey}$_$ctor`];
+        if (setterClass) {
+            return js.isChildClassOf(setterClass, parentClass) ? setterClass : undefined;
+        }
+
+        const srcClass = target['__attrs__'][`${propName}$_$ctor`];
+        if (srcClass) {
+            return js.isChildClassOf(srcClass, parentClass) ? srcClass : undefined;
+        }
+
+        const prototype = Object.getPrototypeOf(target['__attrs__']);
+        if (prototype) {
+            return getCCObjectClassPropTypeMatch(prototype, setterKey, propName, parentClass);
         }
     }
 }
@@ -460,9 +492,47 @@ class ViewElementTracker {
     }
 
     /** 记录哪些属性被追踪，用于传递给节点树端 */
-    protected recordPropTrack(propKey: string, alias: string, trackKey: string, originalValue: any, hasSetter: boolean) {
+    protected recordPropTrack(propKey: string, alias: string, trackKey: string, originalValue: any, hasSetter: boolean, engineClass?: CCObjectConstructor) {
         const aliasOrPropKey = alias || propKey;
-        if (typeof (originalValue) == "object") {
+
+        if (engineClass) {
+            if (js.isChildClassOf(engineClass, Node)) {
+                this._trackPropCopys.set(aliasOrPropKey, {
+                    type: 'Node',
+                    value : {
+                        isValid : isValid(originalValue),
+                        nodeName : (originalValue as Node)?.name || "None",
+                        nodeUuid : (originalValue as Node)?.uuid || ""
+                    } as INodeTypeData,
+                    hasSetter: hasSetter
+                })
+            }
+            else if (js.isChildClassOf(engineClass, Component)) {
+                this._trackPropCopys.set(aliasOrPropKey, {
+                    type: 'Component',
+                    value: {
+                        isValid : isValid(originalValue),
+                        nodeUuid : (originalValue as Component)?.node?.uuid || "",
+                        componentName : js.getClassName(engineClass),
+                        nodeName : (originalValue as Component)?.node?.name || "",
+                    } as IComponentTypeData,
+                    hasSetter: false
+                })
+            }
+            else if (js.isChildClassOf(engineClass, Asset)) {
+                const assetValue = originalValue as Asset;
+                
+                this._trackPropCopys.set(aliasOrPropKey, {
+                    type: 'Asset',
+                    value: {
+                        className : js.getClassName(engineClass),
+                        assetName : assetValue?.name || ""
+                    } as IAssetTypeData,
+                    hasSetter: false
+                })
+            }
+        }
+        else if (typeof (originalValue) == "object") {
             // Logger.log(`record prop track value Type ${aliasOrPropKey} `, originalValue);
             if (originalValue instanceof ValueType) {
                 if (originalValue instanceof Color) {
@@ -518,14 +588,19 @@ class ViewElementTracker {
             if (prop.type == PROP_EDIT_TYPE.PROP) {
                 const curValue = this._target[key];
                 Reflect.defineProperty(this._target, key, prop.original);
-                if(typeof(curValue) == 'object') {
-                    Object.keys(curValue).forEach(subKey=>{
+                if (typeof (curValue) == 'object') {
+                    Object.keys(curValue).forEach(subKey => {
                         this._target[subKey] = curValue[subKey];
                     })
                 }
                 else {
                     this._target[key] = curValue;
                 }
+            }
+            else if(prop.type == PROP_EDIT_TYPE.CCOBJECT) {
+                const curValue = this._target[key];
+                Reflect.defineProperty(this._target, key, prop.original);
+                this._target[key] = curValue;
             }
             else if (prop.type == PROP_EDIT_TYPE.OBJECT) {
                 Reflect.defineProperty(this._target, key, prop.original);
@@ -550,7 +625,7 @@ class ViewElementTracker {
         Reflect.deleteProperty(this._target, VIEWER_TRACKER);
     }
 
-    protected onPropValueChange(aliasOrKey: string, newValue: any) {
+    protected onPropValueChange(aliasOrKey: string, newValue: any, engineClassType ?: cvSupportType) {
         Logger.log(`on prop value change ${aliasOrKey} `, newValue);
         const trackedProp = this._trackPropCopys.get(aliasOrKey);
         if (!trackedProp) {
@@ -572,7 +647,28 @@ class ViewElementTracker {
             }
         }
         else {
-            trackedProp.value = newValue;
+            if(engineClassType == 'Asset') {
+                const value = (trackedProp.value as IAssetTypeData);
+                value.assetName = newValue?.name || "";
+                newValue = value;
+            }
+            else if(engineClassType == 'Component') {
+                const value = (trackedProp.value as IComponentTypeData);
+                value.isValid = isValid(newValue);
+                value.nodeUuid = (newValue as Component)?.node?.uuid || "";
+                value.nodeName = (newValue as Component)?.node?.name || "";
+                newValue = value;
+            }
+            else if(engineClassType == 'Node') {
+                const value = (trackedProp.value as INodeTypeData);
+                value.isValid = isValid(newValue);
+                value.nodeUuid = (newValue as Component)?.node?.uuid || "";
+                value.nodeName = (newValue as Component)?.node?.name || "";
+                newValue = value;
+            }
+            else {
+                trackedProp.value = newValue;
+            }
         }
 
         globalInfo.bridge.onTrackedPropValueChanged(this._uuid, aliasOrKey, newValue);
@@ -595,13 +691,13 @@ class ViewElementTracker {
             tracker.original.call(tracker.target || this._target, value);
         }
         else {
-            if(Reflect.has(this._targetPropsReplacer, propName)) {
-                if(typeof(this._targetPropsReplacer[propName]) == "object" && typeof(value) == 'object') {
-                    Object.keys(value).forEach(key=>{
+            if (Reflect.has(this._targetPropsReplacer, propName)) {
+                if (typeof (this._targetPropsReplacer[propName]) == "object" && typeof (value) == 'object') {
+                    Object.keys(value).forEach(key => {
                         this._targetPropsReplacer[propName][key] = value[key];
                     })
                 }
-                else if(typeof(this._targetPropsReplacer[propName]) == typeof(value))  {
+                else if (typeof (this._targetPropsReplacer[propName]) == typeof (value)) {
                     this._targetPropsReplacer[propName] = value;
                 }
             }
@@ -610,7 +706,7 @@ class ViewElementTracker {
         }
     }
 
-    getSerializeData() : ICCObjectPropGroup {
+    getSerializeData(): ICCObjectPropGroup {
         const propsArray = [];
         this._trackPropCopys.forEach((valueCopy, key) => {
             propsArray.push({
@@ -632,23 +728,67 @@ class ViewElementTracker {
         return this._type;;
     }
 
-    protected processPropTrack(key: string, alias?: string, setFuncs?: string[], customSetterKey ?: string, multiSetters ?: Record<string , IMultiSetterInfo[]>) {
+    protected processPropTrack(key: string, alias?: string, setFuncs?: string[], customSetterKey?: string, multiSetters?: Record<string, IMultiSetterInfo[]>) {
         if (this._trackedPropsMap.has(key)) return;
         const srcValue = this._target[key];
         const self = this;
 
+
+        let setterKeyAsset = customSetterKey;
+        if (!setterKeyAsset && key.startsWith("_")) {
+            setterKeyAsset = key.substring(1);
+        }
+
+        const engineClass = getCCObjectClassPropTypeMatch(this._target.constructor as CCObjectConstructor, setterKeyAsset, key, Asset) ||
+            getCCObjectClassPropTypeMatch(this._target.constructor as CCObjectConstructor, setterKeyAsset, key, Node) || 
+        getCCObjectClassPropTypeMatch(this._target.constructor as CCObjectConstructor, setterKeyAsset, key, Component);
+
+        if(engineClass) {
+            const propDescriptor = getPropertyDescriptor(this._target, key);
+            this.recordCCObjectEdit(key, PROP_EDIT_TYPE.CCOBJECT, propDescriptor);
+            this.recordPropTrack(key, alias, key, this._target[key], false, engineClass);
+            this._targetPropsReplacer[key] = this._target[key];
+            const self = this;
+            let engineClassName : cvSupportType;
+            if(js.isChildClassOf(engineClass, Asset)) {
+                engineClassName = 'Asset';
+            }
+            else if(js.isChildClassOf(engineClass, Node)) {
+                engineClassName = 'Node';
+            }
+            else if(js.isChildClassOf(engineClass, Component)) {
+                engineClassName = 'Component';
+
+                console.log(`Prop Track Component`);
+            }
+
+            Reflect.defineProperty(this._target, key, {
+                set(value) {
+                    self.onPropValueChange(alias || key, value, engineClassName);
+                    // 用 Reflect.apply 来调用原始 setter
+                    self._targetPropsReplacer[key] = value;
+                },
+                get() {
+                    return self._targetPropsReplacer[key];
+                }, // 保持 getter 不变
+                configurable: propDescriptor.configurable,
+                enumerable: propDescriptor.enumerable
+            });
+            return;
+        }
+
         if (setFuncs && setFuncs.length > 0) {
             let hasSetTrackProp = false;
-            for(const setFunc of setFuncs) {
+            for (const setFunc of setFuncs) {
                 const srcFunc = this._target[setFunc];
                 this._target[setFunc] = function (...args) {
                     const result = srcFunc.apply(self._target, args);
                     self.onPropValueChange(alias || key, self._target[key]);
                     return result;
                 }
-    
+
                 this.recordCCObjectEdit(setFunc, PROP_EDIT_TYPE.FUNC_HOOK, srcFunc);
-                if(!hasSetTrackProp) {
+                if (!hasSetTrackProp) {
                     this.recordPropTrack(key, alias, setFunc, this._target[key], true);
                     hasSetTrackProp = true;
                 }
@@ -676,9 +816,9 @@ class ViewElementTracker {
                 hasRecordProp = true;
             }
 
-            if(multiSetters && multiSetters[key]) {
-                multiSetters[key].forEach(info=>{
-                    if(info.isFunc) {
+            if (multiSetters && multiSetters[key]) {
+                multiSetters[key].forEach(info => {
+                    if (info.isFunc) {
                         const srcFunc = this._target[info.name];
                         this._target[info.name] = function (...args) {
                             const result = srcFunc.apply(self._target, args);
@@ -686,7 +826,7 @@ class ViewElementTracker {
                             return result;
                         }
                         this.recordCCObjectEdit(info.name, PROP_EDIT_TYPE.FUNC_HOOK, srcFunc);
-                        if(!hasRecordProp) {
+                        if (!hasRecordProp) {
                             this.recordPropTrack(key, alias, setterKey, this._target[key], true);
                             hasRecordProp = true;
                         }
@@ -701,23 +841,24 @@ class ViewElementTracker {
                         //         this.recordPropTrack(key, alias, info.name, this._target[key], true);
                         //         hasRecordProp = true;
                         //     }
-                            
+
                         //     multiSetterDescriptor.set = function (...args) {
                         //         self.onPropValueChange(alias || key, args[0]);
                         //         originalSetter.apply(self._target, args);
                         //     }
-            
+
                         //     Reflect.defineProperty(this._target, setterKey, multiSetterDescriptor);
                         //     hasRecordProp = true;
                         // }
                     }
                 })
             }
-            if(hasRecordProp) return;
+            if (hasRecordProp) return;
             // Logger.log(`set key ${setterKey}   `, setterDescriptor);
 
         }
 
+        // Node Component Asset 当做普通变量处理
         if (typeof (srcValue) == "object") {
             if (srcValue instanceof Color) {
                 const originalSet = srcValue['set'];
@@ -777,7 +918,6 @@ class ViewElementTracker {
         for (const ctor of ReflectForceSetterProps.keys()) {
             if (this._target instanceof ctor) {
                 const fprops = ReflectForceSetterProps.get(ctor);
-                let multiSetters = fprops.multiSetters;
                 fprops.customItems?.forEach(fprop => {
                     this.processPropTrack(fprop.key, fprop.alias, fprop.setFuncs, fprop.setterKey);
                 })
@@ -787,20 +927,22 @@ class ViewElementTracker {
         const reflectSetter = ReflectForceSetterProps.get(this._target.constructor as CCObjectConstructor);
         let hasCustomSetterConfig = false;
         let hasReplaceSetter = false;
-        let multiSetters : Record<string, IMultiSetterInfo[]>;
+        let multiSetters: Record<string, IMultiSetterInfo[]>;
         Logger.log('analyzeTargetTrack', this._target);
-        if(reflectSetter) {
+
+        if (reflectSetter) {
             hasCustomSetterConfig = Reflect.has(reflectSetter, 'customItems');
             hasReplaceSetter = Reflect.has(reflectSetter, 'replaceMap');
             multiSetters = reflectSetter.multiSetters;
             Logger.log(reflectSetter, this._target);
         }
+
         // 如果没有特殊处理，默认全部属性都监听
         if (!hasCustomSetterConfig) {
             const valueKeys = this._target.constructor?.['__values__'] || [];
             Reflect.ownKeys(this._target).forEach(key => {
                 if (!valueKeys.includes(key) || key == "node") return;
-                if(hasReplaceSetter) {
+                if (hasReplaceSetter) {
                     //@ts-ignore
                     this.processPropTrack(key.toString(), reflectSetter['replaceMap'][key], undefined, reflectSetter['replaceMap'][key], multiSetters);
                 }
@@ -819,7 +961,7 @@ class ViewElementTracker {
 
 @vclass()
 class NodeInfo {
-    static index : number = 0;
+    static index: number = 0;
     name: string = "";
     uuid: string = "";
     children: NodeInfo[] = [];
@@ -855,7 +997,7 @@ class NodeInfo {
 
     clearListeners() {
         const node = globalInfo.allNodesMap.get(this.uuid);
-        if(!isValid(node)) return;
+        if (!isValid(node)) return;
         node.targetOff(this);
     }
 
@@ -864,14 +1006,14 @@ class NodeInfo {
     }
 
     protected onActiveChanged(node: Node) {
-        if(node.active == this.active) return;
+        if (node.active == this.active) return;
         this.active = node.active;
         globalInfo.bridge.onNodeActiveChanged(this.uuid, node.active);
     }
 
     protected onNodeDestroyed() {
         Logger.log(`on node ${this.name} destroyed`);
-        if(globalInfo.selectedNode === this) {
+        if (globalInfo.selectedNode === this) {
             this.unSelectNode();
             globalInfo.selectedNode = undefined;
         }
@@ -892,7 +1034,7 @@ class NodeInfo {
         const index = this.children.findIndex(nodeInfo => nodeInfo.uuid == child.uuid);
         this.childrenUUidMap.delete(child.uuid);
         this.childrenNameMap.delete(child.name);
-        
+
         if (index != -1) {
             this.children.splice(index, 1);
         }
@@ -901,7 +1043,7 @@ class NodeInfo {
 
     protected onChildAdd(child: Node) {
         // Logger.log(new Error().stack);
-        Logger.log(`on child add ${child.uuid}    index : ${ this._index}`, this);
+        Logger.log(`on child add ${child.uuid}    index : ${this._index}`, this);
         const childInfo = globalInfo.allNodeInfosMap.get(child.uuid) || walkNode(child, this);
         this.addChildNodeInfo(childInfo);
 
@@ -983,7 +1125,7 @@ class NodeInfo {
 }
 
 function walkNode(node: Node, parent?: NodeInfo) {
-    if(globalInfo.allNodeInfosMap.has(node.uuid)) {
+    if (globalInfo.allNodeInfosMap.has(node.uuid)) {
         Logger.log(`walk same node`);
         return globalInfo.allNodeInfosMap.get(node.uuid);
     }
@@ -996,7 +1138,7 @@ function walkNode(node: Node, parent?: NodeInfo) {
     return nodeInfo;
 }
 
-if (!EDITOR_NOT_IN_PREVIEW) {
+if (!EDITOR) {
     function patchNode() {
         // 获取原始属性描述符
         const descriptor = Reflect.getOwnPropertyDescriptor(Node.prototype, 'name');
@@ -1023,33 +1165,87 @@ if (!EDITOR_NOT_IN_PREVIEW) {
     patchNode();
 
     director.on(Director.EVENT_BEFORE_SCENE_LOADING, (scene: Scene) => {
-        globalInfo.allNodeInfosMap.forEach(nodeInfo=>nodeInfo.clearListeners());
+        globalInfo.allNodeInfosMap.forEach(nodeInfo => nodeInfo.clearListeners());
         globalInfo.allNodesMap.clear();
         globalInfo.allNodeInfosMap.clear();
-        globalInfo.trackers.forEach(tracker=>tracker.unTrack());
+        globalInfo.trackers.forEach(tracker => tracker.unTrack());
         globalInfo.selectedNode = undefined;
-        // Logger.log(JSON.stringify(globalInfo.sceneTree, undefined, 2));
     })
 
     director.on(Director.EVENT_AFTER_SCENE_LAUNCH, (scene: Scene) => {
-        globalInfo.allNodeInfosMap.forEach(nodeInfo=>nodeInfo.clearListeners());
+        globalInfo.allNodeInfosMap.forEach(nodeInfo => nodeInfo.clearListeners());
         globalInfo.allNodesMap.clear();
         globalInfo.allNodeInfosMap.clear();
         globalInfo.sceneTree = walkNode(scene);
         globalInfo.bridge.syncScene();
-        // Logger.log(JSON.stringify(globalInfo.sceneTree, undefined, 2));
     })
 
-    game.on(Game.EVENT_GAME_INITED, ()=>{globalInfo.bridge.connect()});
+    game.on(Game.EVENT_GAME_INITED, () => { globalInfo.bridge.connect() });
 
-    // const ws = new WebSocket("ws://localhost:8999");
-    // ws.onopen = ()=>{
-    //     Logger.log(`on websocket connect`);
-    //     ws.send(JSON.stringify({
-    //         data : [globalInfo.sceneTree],
-    //         type : "scene"
-    //     }));
+    function drawRoundedRect(g: Graphics, x: number, y: number, w: number, h: number, r: number) {
+        g.moveTo(x + r, y);
+        g.roundRect(x, y, w, h,r);
+    }
 
-    // }
+    function createCreatorViewDebugLayer() {
 
+        const width = 8;
+        const height = 8;
+
+        // 创建纯白像素数据
+        const whitePixel = new Uint8Array(width * height * 4);
+        for (let i = 0; i < whitePixel.length; i += 4) {
+            whitePixel[i] = 255;     // R
+            whitePixel[i + 1] = 255; // G
+            whitePixel[i + 2] = 255; // B
+            whitePixel[i + 3] = 255; // A
+        }
+
+        // 创建 Texture2D
+        const texture = new Texture2D();
+        texture.reset({
+            width,
+            height,
+            format: Texture2D.PixelFormat.RGBA8888,
+        });
+        texture.uploadData(whitePixel); 
+
+        // 创建 SpriteFrame
+        const spriteFrame = new SpriteFrame();
+        spriteFrame.texture = texture;
+
+        // 创建节点并添加组件
+        const node = new Node('WhiteSprite');
+        const sprite = node.addComponent(Sprite);
+        sprite.spriteFrame = spriteFrame;
+
+        // 设置尺寸
+        const uiTransform = node.getComponent(UITransform);
+        uiTransform.setContentSize(100, 100); // 你想要的宽高
+
+
+        // setTimeout(()=>{
+        //     director.getScene().getChildByName("Canvas").addChild(node);
+        // }, 3000);
+        // 添加到场景中
+        const canvasNode = new Node();
+        const widget = canvasNode.addComponent(Widget);
+        canvasNode.addComponent(Canvas);
+        widget.isAlignBottom = widget.isAlignTop = widget.isAlignLeft = widget.isAlignRight = true;
+        widget.bottom = widget.top = widget.left = widget.right = 0;
+        director.addPersistRootNode(canvasNode);
+
+        const graphicsNode = new Node();
+        const graphicsComp = graphicsNode.addComponent(Graphics);
+        drawRoundedRect(graphicsComp, 0, 0, 200, 60, 10);
+        graphicsComp.fillColor = Color.YELLOW;
+        graphicsComp.fill();
+        canvasNode.addChild(graphicsNode);
+        const edit = graphicsNode.addComponent(EditBox);
+        edit.inputMode = EditBox.InputMode.SINGLE_LINE;
+        const inputLabel = graphicsNode.getChildByName('TEXT_LABEL').getComponent(Label);
+        inputLabel.fontSize = 26;
+        inputLabel.color = Color.BLACK;
+    }
+    createCreatorViewDebugLayer();
 }
